@@ -1,21 +1,27 @@
 import socket
 import random
 import threading
+from queue import Queue
+from threading import Barrier, Semaphore
 
 HOST = "localhost"
 PORT = 12345
 buffer_size = 1024
-numConn = 4
+numConn = 3
 
 game_state = None
-lock = threading.Lock()  # Bloqueo para sincronizar los movimientos de los clientes
-board = None  # Tablero compartido entre los clientes
+lock = threading.Lock()
+board = None
+turns_queue = Queue()
+
+start_barrier = Barrier(numConn)  # Barrier para sincronizar el inicio del juego
+turn_semaphore = Semaphore(1)  # Semáforo para controlar los turnos de los jugadores
 
 class BoardManager:
     def __init__(self, board, flipped_cards):
         self.board = board
         self.flipped_cards = flipped_cards
-        self.lock = threading.Lock()  # Bloqueo para controlar el acceso a los clientes
+        self.lock = threading.Lock()
 
     def get_board(self):
         return self.board
@@ -41,16 +47,31 @@ def build_board(difficulty):
     return f"Modo: {'Principiante' if difficulty == 1 else 'Avanzado'}", random.sample(words * 2, board_size), ['X'] * board_size
 
 def play_game(client_socket, board_manager):
-    global board
+    global board, turns_queue, turn_semaphore
     attempts = 0
     last_choice = None
+    carta_previa = None
+
     while True:
+        turn_semaphore.acquire()  # Adquirir el semáforo para obtener el turno
+
+        turn = turns_queue.get()
+
+        if turn != client_socket:
+            turns_queue.put(turn)
+            turn_semaphore.release()  # Liberar el semáforo si no es el turno del cliente actual
+            continue
+
+        client_socket.send(str("Es tu turno").encode())
+
         choice = int(client_socket.recv(buffer_size).decode().strip())
-        if choice < 0 or choice >= len(board_manager.get_flipped_cards()):
+        flipped_cards = board_manager.get_flipped_cards()
+
+        if choice < 0 or choice >= len(flipped_cards):
             client_socket.send(str('Intente de nuevo.').encode())
             client_socket.send(str('Opción inválida').encode())
             attempts = 0
-        elif board_manager.get_flipped_cards()[choice] != 'X':
+        elif flipped_cards[choice] != 'X':
             client_socket.send(str("Anterior:" + carta_previa).encode())
             client_socket.send(str('Carta ya seleccionada').encode())
             attempts = 0
@@ -60,17 +81,19 @@ def play_game(client_socket, board_manager):
             board_manager.flip_card(choice, carta)
             if attempts == 2:
                 client_socket.send(str(carta).encode())
-                if board[choice] == board[last_choice]:
+                if last_choice is not None and board[choice] == board[last_choice]:
                     client_socket.send(str('\n¡Felicidades! Ha formado una pareja').encode())
                     board_manager.flip_card(last_choice, board[last_choice])
                     board_manager.flip_card(choice, board[choice])
                     attempts = 0
                     if "X" not in board_manager.get_flipped_cards():
                         client_socket.sendall(str('\n¡Felicidades! Ha ganado el juego\n').encode())
+                        turn_semaphore.release()  # Liberar el semáforo antes de finalizar el juego
                         break
                 else:
                     client_socket.sendall(str('No fue pareja. Sigue jugando\n').encode())
-                    board_manager.flip_card(last_choice, 'X')
+                    if last_choice is not None:
+                        board_manager.flip_card(last_choice, 'X')
                     board_manager.flip_card(choice, 'X')
                     attempts = 0
             elif attempts == 1:
@@ -79,8 +102,11 @@ def play_game(client_socket, board_manager):
                 last_choice = choice
                 carta_previa = carta
 
+        turns_queue.put(client_socket)
+        turn_semaphore.release()  # Liberar el semáforo al finalizar el turno
+
 def run_game(client_socket, game_state):
-    global board
+    global board, turns_queue, turn_semaphore
     message, game_board, flipped_cards = game_state
 
     if game_board is None:
@@ -92,9 +118,12 @@ def run_game(client_socket, game_state):
         if board is None:
             board = game_board
 
-    client_socket.send(message.encode())
     board_manager = BoardManager(board, flipped_cards)
-    print(board)
+
+    turns_queue.put(client_socket)
+
+    start_barrier.wait()  # Esperar a que todos los clientes estén listos
+
     play_game(client_socket, board_manager)
     client_socket.close()
 
