@@ -7,7 +7,7 @@ from threading import Barrier, Semaphore
 HOST = "localhost"
 PORT = 12345
 buffer_size = 1024
-numConn = 3
+numConn = 2
 
 game_state = None
 lock = threading.Lock()
@@ -17,6 +17,8 @@ clients = []  # Una lista de clientes para mantener el orden de los turnos
 start_barrier = Barrier(numConn)  # Barrier para sincronizar el inicio del juego
 turn_semaphore = Semaphore(0)  # Semáforo para controlar los turnos de los jugadores
 
+
+# Definición de la clase BoardManager
 class BoardManager:
     def __init__(self, board, flipped_cards):
         self.board = board
@@ -34,6 +36,8 @@ class BoardManager:
         with self.lock:
             self.flipped_cards[index] = card
 
+
+# Definición de la función para construir el tablero
 def build_board(difficulty):
     if difficulty == 1:
         words = ['gato', 'perro', 'oso', 'conejo']
@@ -44,8 +48,11 @@ def build_board(difficulty):
     else:
         return 'Opción inválida', None, None
 
-    return f"Modo: {'Principiante' if difficulty == 1 else 'Avanzado'}", random.sample(words * 2, board_size), ['X'] * board_size
+    return f"Modo: {'Principiante' if difficulty == 1 else 'Avanzado'}", random.sample(words * 2, board_size), [
+                                                                                                                   'X'] * board_size
 
+
+# Definición de la función para jugar el juego
 def play_game(client_socket, board_manager):
     global clients, turn_semaphore
     board = board_manager.get_board()
@@ -54,16 +61,23 @@ def play_game(client_socket, board_manager):
     carta_previa = None
 
     while True:
-        turn_semaphore.acquire()  # Adquirir el semáforo para obtener el turno
+        # Primero, asumimos que el cliente no tiene el turno
+        client_has_turn = False
 
-        # Actualizar el cliente actual al cliente en la parte delantera de la lista
-        current_client = clients[0]
-        # Rotar la lista de clientes para que el próximo cliente esté al frente
-        clients = clients[1:] + clients[:1]
+        # Bloqueamos hasta que sea nuestro turno
+        while not client_has_turn:
+            turn_semaphore.acquire()  # Adquirir el semáforo para obtener el turno
 
-        if current_client != client_socket:
-            turn_semaphore.release()  # Liberar el semáforo si no es el turno del cliente actual
-            continue
+            # Actualizar el cliente actual al cliente en la parte delantera de la lista
+            current_client = clients[0]
+            # Rotar la lista de clientes para que el próximo cliente esté al frente
+            clients = clients[1:] + clients[:1]
+
+            # Verificamos si el cliente actual es el mismo que el cliente que tiene el semáforo
+            if current_client == client_socket:
+                client_has_turn = True  # El cliente tiene el turno
+            else:
+                turn_semaphore.release()  # Liberar el semáforo si no es el turno del cliente actual
 
         client_socket.send(str("Es tu turno").encode())
 
@@ -108,8 +122,7 @@ def play_game(client_socket, board_manager):
         turn_semaphore.release()  # Liberar el semáforo al finalizar el turno
 
 
-# En la función run_game, en lugar de poner al cliente en la cola,
-# lo añadimos a la lista de clientes.
+# Definición de la función para correr el juego
 def run_game(client_socket, game_state):
     global board, clients, turn_semaphore
     message, game_board, flipped_cards = game_state
@@ -135,6 +148,9 @@ def run_game(client_socket, game_state):
 
     play_game(client_socket, board_manager)
     client_socket.close()
+
+
+# Definición de la función para servir por siempre
 def servirPorSiempre(socketTcp, listaconexiones):
     global game_state
     difficulty = int(input("\nDificultad: 1)Principiante 2)Avanzado \n Ingrese numero:\n"))
@@ -145,12 +161,14 @@ def servirPorSiempre(socketTcp, listaconexiones):
             listaconexiones.append(client_conn)
             if game_state is None:
                 game_state = build_board(difficulty)
-            threading.Thread(target=run_game, args=(client_conn,game_state)).start()
+            threading.Thread(target=run_game, args=(client_conn, game_state)).start()
             gestion_conexiones(listaconexiones)
     finally:
         for conn in listaconexiones:
             conn.close()
 
+
+# Definición de la función para gestionar las conexiones
 def gestion_conexiones(listaconexiones):
     for conn in listaconexiones:
         if conn.fileno() == -1:
@@ -160,6 +178,8 @@ def gestion_conexiones(listaconexiones):
     print("conexiones: ", len(listaconexiones))
     print(listaconexiones)
 
+
+# Creación del servidor
 listaconexiones = []
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as socketTcp:
     socketTcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
