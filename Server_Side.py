@@ -12,10 +12,10 @@ numConn = 3
 game_state = None
 lock = threading.Lock()
 board = None
-turns_queue = Queue()
+clients = []  # Una lista de clientes para mantener el orden de los turnos
 
 start_barrier = Barrier(numConn)  # Barrier para sincronizar el inicio del juego
-turn_semaphore = Semaphore(1)  # Semáforo para controlar los turnos de los jugadores
+turn_semaphore = Semaphore(0)  # Semáforo para controlar los turnos de los jugadores
 
 class BoardManager:
     def __init__(self, board, flipped_cards):
@@ -47,7 +47,8 @@ def build_board(difficulty):
     return f"Modo: {'Principiante' if difficulty == 1 else 'Avanzado'}", random.sample(words * 2, board_size), ['X'] * board_size
 
 def play_game(client_socket, board_manager):
-    global board, turns_queue, turn_semaphore
+    global clients, turn_semaphore
+    board = board_manager.get_board()
     attempts = 0
     last_choice = None
     carta_previa = None
@@ -55,10 +56,12 @@ def play_game(client_socket, board_manager):
     while True:
         turn_semaphore.acquire()  # Adquirir el semáforo para obtener el turno
 
-        turn = turns_queue.get()
+        # Actualizar el cliente actual al cliente en la parte delantera de la lista
+        current_client = clients[0]
+        # Rotar la lista de clientes para que el próximo cliente esté al frente
+        clients = clients[1:] + clients[:1]
 
-        if turn != client_socket:
-            turns_queue.put(turn)
+        if current_client != client_socket:
             turn_semaphore.release()  # Liberar el semáforo si no es el turno del cliente actual
             continue
 
@@ -102,11 +105,13 @@ def play_game(client_socket, board_manager):
                 last_choice = choice
                 carta_previa = carta
 
-        turns_queue.put(client_socket)
         turn_semaphore.release()  # Liberar el semáforo al finalizar el turno
 
+
+# En la función run_game, en lugar de poner al cliente en la cola,
+# lo añadimos a la lista de clientes.
 def run_game(client_socket, game_state):
-    global board, turns_queue, turn_semaphore
+    global board, clients, turn_semaphore
     message, game_board, flipped_cards = game_state
 
     if game_board is None:
@@ -120,13 +125,16 @@ def run_game(client_socket, game_state):
 
     board_manager = BoardManager(board, flipped_cards)
 
-    turns_queue.put(client_socket)
+    clients.append(client_socket)  # Añadimos el cliente a la lista de clientes en lugar de la cola
 
     start_barrier.wait()  # Esperar a que todos los clientes estén listos
 
+    # Desbloqueamos el semáforo una vez que todos los clientes están listos
+    if clients[0] == client_socket:
+        turn_semaphore.release()
+
     play_game(client_socket, board_manager)
     client_socket.close()
-
 def servirPorSiempre(socketTcp, listaconexiones):
     global game_state
     difficulty = int(input("\nDificultad: 1)Principiante 2)Avanzado \n Ingrese numero:\n"))
